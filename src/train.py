@@ -1,7 +1,8 @@
 """
-train.py
+train.py (Token Replacement 版)
 ========
-多模态大模型联合微调脚本 (通用版，支持 CWRU / XJTU 等所有由 generate_dataset 产出的 SFT 数据)
+多模态大模型联合微调脚本 (通用版)
+改动：input_ids 中插入 SIGNAL_TOKEN_ID 占位符，不再做显式 Embedding 拼接。
 """
 import os
 import sys
@@ -21,9 +22,9 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from models.multimodal_qwen import BearingMultimodalQwen
+from models.multimodal_qwen import BearingMultimodalQwen, SIGNAL_TOKEN_ID, DEFAULT_NUM_VIB_TOKENS
 
-QWEN_PATH    = os.path.join(PROJECT_ROOT, "qwen_weights")
+QWEN_PATH = os.path.join(PROJECT_ROOT, "qwen_weights")
 
 # 超参数
 BATCH_SIZE           = 1
@@ -48,12 +49,16 @@ class MultimodalSFTDataset(Dataset):
         "请给出严谨的推理过程与最终诊断结论。\n<|im_end|>\n"
     )
 
-    def __init__(self, json_path, pt_path, tokenizer, max_len=MAX_SEQ_LEN):
+    def __init__(self, json_path, pt_path, tokenizer, max_len=MAX_SEQ_LEN,
+                 num_vib_tokens=DEFAULT_NUM_VIB_TOKENS,
+                 signal_token_id=SIGNAL_TOKEN_ID):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.records = json.load(f)
         self.features = torch.load(pt_path, map_location='cpu')
         self.tokenizer = tokenizer
         self.max_len   = max_len
+        self.num_vib_tokens = num_vib_tokens
+        self.signal_token_id = signal_token_id
 
     def __len__(self):
         return len(self.records)
@@ -61,6 +66,9 @@ class MultimodalSFTDataset(Dataset):
     def __getitem__(self, idx):
         rec  = self.records[idx]
         feat = self.features[idx]
+
+        # 构造用于 Token 替换的占位符序列
+        signal_placeholder = [self.signal_token_id] * self.num_vib_tokens
 
         user_text = (
             f"<|im_start|>user\n"
@@ -74,12 +82,16 @@ class MultimodalSFTDataset(Dataset):
         prompt_ids = self.tokenizer(full_text, add_special_tokens=False).input_ids
         response_ids = self.tokenizer(rec['output'] + "\n<|im_end|>", add_special_tokens=False).input_ids
 
+        # 【核心改动】在 prompt 开头插入信号占位 Token
+        prompt_ids = signal_placeholder + prompt_ids
+
         max_prompt_len = self.max_len - min(len(response_ids), 64) - 2
         prompt_ids = prompt_ids[-max_prompt_len:]
 
         input_ids = prompt_ids + response_ids
         input_ids = input_ids[:self.max_len]
 
+        # Labels：占位符和 prompt 部分全部填 -100（不参与 Loss），仅 response 参与
         labels = [IGNORE_INDEX] * len(prompt_ids) + response_ids
         labels = labels[:self.max_len]
 
@@ -121,15 +133,15 @@ def save_standard_checkpoint(wrapper, optimizer, scheduler, epoch, step, loss, p
 def main(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-        
+
     dataset_name = config.get("dataset_name", "Unknown")
     data_dir = config.get("data_dir", "data/")
     if not os.path.isabs(data_dir):
         data_dir = os.path.join(PROJECT_ROOT, data_dir)
-        
+
     json_path = os.path.join(data_dir, "train_sft.json")
     pt_path = os.path.join(data_dir, "train_features.pt")
-    
+
     output_dir = os.path.join(PROJECT_ROOT, "bearllm_weights", f"checkpoints_{dataset_name.lower()}")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -143,7 +155,7 @@ def main(config_path):
     dataset = MultimodalSFTDataset(json_path, pt_path, tokenizer, max_len=MAX_SEQ_LEN)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
 
-    wrapper = BearingMultimodalQwen(qwen_path=QWEN_PATH, freeze_llm=True, num_vib_tokens=8)
+    wrapper = BearingMultimodalQwen(qwen_path=QWEN_PATH, freeze_llm=True, num_vib_tokens=DEFAULT_NUM_VIB_TOKENS)
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -158,7 +170,7 @@ def main(config_path):
 
     for param in wrapper.alignment_layer.parameters():
         param.requires_grad = True
-    ALIGN_DEVICE = next(wrapper.qwen.parameters()).device   
+    ALIGN_DEVICE = next(wrapper.qwen.parameters()).device
     wrapper.alignment_layer = wrapper.alignment_layer.to(ALIGN_DEVICE)
 
     trainable_params = [p for p in wrapper.parameters() if p.requires_grad]
@@ -172,7 +184,7 @@ def main(config_path):
     global_step = 0
     accum_loss = 0.0
 
-    print("\n🚀 开始联合微调...")
+    print("\n🚀 开始联合微调 (Token Replacement 模式)...")
     for epoch in range(NUM_EPOCHS):
         wrapper.train()
         epoch_loss = 0.0
@@ -223,8 +235,8 @@ def main(config_path):
     print(f"\n✅ 训练大功告成！特征对齐网络与 LLM 知识引擎已深度绑定，请查看 {best_path}。")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="多模态大模型联合微调脚本")
+    parser = argparse.ArgumentParser(description="多模态大模型联合微调脚本 (Token Replacement)")
     parser.add_argument("--config", type=str, required=True, help="YAML 配置文件路径")
     args = parser.parse_args()
-    
+
     main(args.config)

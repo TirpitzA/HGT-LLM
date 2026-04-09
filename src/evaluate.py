@@ -1,8 +1,8 @@
 """
-evaluate_multimodal.py
-======================
-多模态模型评估脚本：通用版。
-新增：GFLOPs/Params 算力统计，以及受控信噪比 (SNR) 鲁棒性注入测试。
+evaluate.py (Token Replacement 版)
+==================================
+多模态模型评估脚本。
+改动：适配 token 替换逻辑。在 input_ids 中插入 SIGNAL_TOKEN_ID。
 """
 import os
 import sys
@@ -17,16 +17,14 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-# 获取项目根目录并加入 sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from models.multimodal_qwen import AlignmentLayer
+from models.multimodal_qwen import AlignmentLayer, ModifiedEmbedding, SIGNAL_TOKEN_ID, DEFAULT_NUM_VIB_TOKENS
 
-# ── 路径默认值 ──────────────────────────────────────────────────────────────
-QWEN_PATH = "/root/autodl-tmp/HGT_LLM/qwen_weights"
-DATA_DIR  = "/root/autodl-tmp/HGT_LLM"
+QWEN_PATH = os.path.join(PROJECT_ROOT, "qwen_weights")
+DATA_DIR  = PROJECT_ROOT
 
 class MultimodalEvaluator:
     SYSTEM_PROMPT = (
@@ -35,8 +33,12 @@ class MultimodalEvaluator:
         "请给出严谨的推理过程与最终诊断结论。\n<|im_end|>\n"
     )
 
-    def __init__(self, checkpoint_dir: str, qwen_path: str = QWEN_PATH, num_vib_tokens: int = 8):
+    def __init__(self, checkpoint_dir: str, qwen_path: str = QWEN_PATH, 
+                 num_vib_tokens: int = DEFAULT_NUM_VIB_TOKENS,
+                 signal_token_id: int = SIGNAL_TOKEN_ID):
         self.num_vib_tokens = num_vib_tokens
+        self.signal_token_id = signal_token_id
+        
         lora_path  = os.path.join(checkpoint_dir, "lora_adapter")
         align_path = os.path.join(checkpoint_dir, "alignment_layer.pt")
 
@@ -72,16 +74,20 @@ class MultimodalEvaluator:
         )
         self.alignment_layer.eval()
         
-        # === 【算力统计模块 (Params)】 ===
+        # 替换 Embedding 为 Token 替换模式
+        original_embedding = self.model.get_input_embeddings()
+        self.modified_embedding = ModifiedEmbedding(
+            original_embedding, self.alignment_layer,
+            signal_token_id, num_vib_tokens
+        )
+        self.model.set_input_embeddings(self.modified_embedding)
+        
         self._print_model_complexity()
-        print("[EVAL] 模型就绪✓")
+        print("[EVAL] 模型就绪✓ (Token Replacement Mode)")
 
     def _print_model_complexity(self):
-        """自动统计并打印模型参数量与复杂度，用于论文表格"""
-        # LoRA 参数量统计
         trainable_params, all_param = self.model.get_nb_trainable_parameters()
-        # Alignment Layer 参数量统计
-        align_params = sum(p.numel() for p in self.alignment_layer.parameters() if p.requires_grad)
+        align_params = sum(p.numel() for p in self.alignment_layer.parameters())
         
         total_trainable = trainable_params + align_params
         print(f"\n[COMPLEXITY] 📊 算力与参数量分析:")
@@ -93,13 +99,15 @@ class MultimodalEvaluator:
     @torch.no_grad()
     def compute_ppl(self, deep_feature: torch.Tensor, instruction: str,
                     input_ctx: str, output_txt: str) -> float:
-        """独立计算给定样本的条件语言模型困惑度 (PPL)，绝不污染模型状态"""
         self.model.eval()
         self.alignment_layer.eval()
         
         if deep_feature.dim() == 1:
             deep_feature = deep_feature.unsqueeze(0)
         deep_feature = deep_feature.to(self.device).to(torch.float16)
+        
+        # 将特征写入缓存
+        self.modified_embedding.set_feature(deep_feature)
 
         user_text = (
             f"<|im_start|>user\n"
@@ -110,27 +118,23 @@ class MultimodalEvaluator:
         )
         full_prompt = self.SYSTEM_PROMPT + user_text
 
-        prompt_ids = self.tokenizer(full_prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
-        target_ids = self.tokenizer(output_txt + "<|im_end|>", return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
+        prompt_ids = self.tokenizer(full_prompt, add_special_tokens=False).input_ids
+        target_ids = self.tokenizer(output_txt + "<|im_end|>", add_special_tokens=False).input_ids
         
-        seq_ids = torch.cat([prompt_ids, target_ids], dim=1)
+        # 在 prompt 开头插入占位符
+        signal_placeholder = [self.signal_token_id] * self.num_vib_tokens
+        prompt_ids = signal_placeholder + prompt_ids
+        
+        seq_ids = torch.tensor([prompt_ids + target_ids], dtype=torch.long, device=self.device)
         attention_mask = torch.ones_like(seq_ids)
         
-        text_embeds = self.model.get_input_embeddings()(seq_ids)
-        vib_embeds = self.alignment_layer(deep_feature)
-        
-        inputs_embeds = torch.cat([vib_embeds, text_embeds], dim=1)
-        
-        vib_mask = torch.ones((1, self.num_vib_tokens), dtype=attention_mask.dtype, device=self.device)
-        extended_mask = torch.cat([vib_mask, attention_mask], dim=1)
-        
-        vib_labels = torch.full((1, self.num_vib_tokens), -100, dtype=torch.long, device=self.device)
-        prompt_labels = torch.full_like(prompt_ids, -100)
-        extended_labels = torch.cat([vib_labels, prompt_labels, target_ids], dim=1)
+        vib_labels = [-100] * self.num_vib_tokens
+        prompt_labels = [-100] * (len(prompt_ids) - self.num_vib_tokens)
+        extended_labels = torch.tensor([vib_labels + prompt_labels + target_ids], dtype=torch.long, device=self.device)
         
         outputs = self.model(
-            inputs_embeds=inputs_embeds,
-            attention_mask=extended_mask,
+            input_ids=seq_ids,
+            attention_mask=attention_mask,
             labels=extended_labels
         )
         
@@ -146,6 +150,9 @@ class MultimodalEvaluator:
             deep_feature = deep_feature.unsqueeze(0)
         deep_feature = deep_feature.to(self.device).to(torch.float16)
 
+        # 将特征写入缓存
+        self.modified_embedding.set_feature(deep_feature)
+
         user_text = (
             f"<|im_start|>user\n"
             f"{instruction}\n\n"
@@ -155,43 +162,34 @@ class MultimodalEvaluator:
         )
         full_prompt = self.SYSTEM_PROMPT + user_text
 
-        enc = self.tokenizer(full_prompt, return_tensors="pt", add_special_tokens=False).to(self.device)
-        input_ids      = enc.input_ids         
-        attention_mask = enc.attention_mask    
-
-        embed_fn    = self.model.get_input_embeddings()
-        text_embeds = embed_fn(input_ids)      
-        vib_embeds  = self.alignment_layer(deep_feature)  
-
-        inputs_embeds = torch.cat([vib_embeds, text_embeds], dim=1)
-        vib_mask = torch.ones(1, self.num_vib_tokens, dtype=attention_mask.dtype, device=self.device)
-        extended_mask = torch.cat([vib_mask, attention_mask], dim=1)
+        prompt_ids = self.tokenizer(full_prompt, add_special_tokens=False).input_ids
+        signal_placeholder = [self.signal_token_id] * self.num_vib_tokens
+        prompt_ids = signal_placeholder + prompt_ids
+        
+        input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=self.device)
+        attention_mask = torch.ones_like(input_ids)
 
         output_ids = self.model.generate(
-            inputs_embeds    = inputs_embeds,
-            attention_mask   = extended_mask,
+            input_ids        = input_ids,
+            attention_mask   = attention_mask,
             max_new_tokens   = max_new_tokens,
             do_sample        = False,
             pad_token_id     = self.tokenizer.eos_token_id,
         )
+        
+        # 切片截断 prompt 部分
+        output_ids = output_ids[0][input_ids.shape[1]:]
 
-        return self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        return self.tokenizer.decode(output_ids, skip_special_tokens=True)
 
 
-# === 【鲁棒性测试模块 (SNR 注入)】 ===
 def inject_awgn_noise(feature_tensor: torch.Tensor, snr_db: float) -> torch.Tensor:
-    """
-    在特征张量中注入受控信噪比 (SNR) 的高斯白噪声。
-    数学依据: P_noise = P_signal / (10^(SNR/10))
-    """
     signal_power = torch.mean(feature_tensor ** 2)
     noise_power = signal_power / (10 ** (snr_db / 10.0))
     noise = torch.randn_like(feature_tensor) * math.sqrt(noise_power)
     return feature_tensor + noise
 
-
 def extract_label(text: str, class_map: dict) -> Optional[str]:
-    """从生成文本中提取分类标签"""
     for cls_id, cls_str in class_map.items():
         if cls_str in text:
             return cls_str
@@ -232,7 +230,6 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
         rec  = records[i]
         feat = features[i].clone()   
 
-        # 动态噪声注入
         if snr is not None:
             feat = inject_awgn_noise(feat, snr)
 
@@ -308,8 +305,6 @@ if __name__ == "__main__":
                         help="测试 deep_feature .pt 路径")
     parser.add_argument("--qwen_path", type=str, default=QWEN_PATH)
     parser.add_argument("--max_new_tokens", type=int, default=256)
-    
-    # === 新增：SNR 鲁棒性注入参数 ===
     parser.add_argument("--snr", type=float, default=None, 
                         help="注入的 AWGN 噪声强度(dB)。例如: 5, 0, -5。不传则为纯净测试。")
     
