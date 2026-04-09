@@ -1,0 +1,57 @@
+dataset_name: "DIRG"
+model_params:
+  in_channels: 6
+  num_classes: 7
+  slice_length: 1024
+  num_slices: 3
+  num_nodes: 4
+  cnn_hidden: 32
+  gat_hidden: 32
+  transformer_dim: 64
+  transformer_heads: 2
+  transformer_layers: 2
+  dropout: 0.3
+
+checkpoint_path: "bearllm_weights/best_model_dirg.pth"
+forbidden_words: ["预测状态", "置信度", "诊断结论", "内圈", "滚珠", "外圈", "健康"]
+data_dir: "data/"
+
+components:
+  0: "内圈 (Inner Race)"
+  1: "外圈 (Outer Race)"
+  2: "滚珠 (Rolling Element/Ball)"
+  3: "保持架 (Cage)"
+
+labels:
+  0: "健康状态 (Healthy)"
+  1: "内圈轻微损伤 (Minor Inner Race fault)"
+  2: "内圈中度损伤 (Moderate Inner Race fault)"
+  3: "内圈严重损伤 (Severe Inner Race fault)"
+  4: "滚珠/外圈轻微损伤 (Minor Ball/Outer Race fault)"
+  5: "滚珠/外圈中度损伤 (Moderate Ball/Outer Race fault)"
+  6: "滚珠/外圈严重损伤 (Severe Ball/Outer Race fault)"
+
+severities:
+  1: "轻微 (150μm)"
+  2: "中度 (250μm)"
+  3: "严重 (450μm)"
+  4: "轻微 (150μm)"
+  5: "中度 (250μm)"
+  6: "严重 (450μm)"
+
+fault_mapping:
+  1: ["Inner", "内圈"]
+  2: ["Inner", "内圈"]
+  3: ["Inner", "内圈"]
+  4: ["Outer", "滚珠/外圈"] # simplification for routing
+  5: ["Outer", "滚珠/外圈"]
+  6: ["Outer", "滚珠/外圈"]
+
+reasoning_chains:
+  0: "多通道加速度信号振动信噪比处于正常基线水平，未检测到周期性瞬态冲击，组件间信息交互规律平稳。"
+  1: "推理链路: 内圈检测到 {severity} 的微小剥落/压痕损伤。内圈随主轴旋转，损伤特征在物理拓扑被精确捕获。能量流向外层节点溢出，图谱判别为内圈损伤。"
+  2: "推理链路: 内圈检测到 {severity} 的微小剥落/压痕损伤。内圈随主轴旋转，损伤特征在物理拓扑被精确捕获。能量流向外层节点溢出，图谱判别为内圈损伤。"
+  3: "推理链路: 内圈检测到 {severity} 的微小剥落/压痕损伤。内圈随主轴旋转，损伤特征在物理拓扑被精确捕获。能量流向外层节点溢出，图谱判别为内圈损伤。"
+  4: "推理链路: 滚珠或外圈检测到 {severity} 的剥落/压痕损伤。对应节点特征出现高能脉冲，由于滚珠自身公转特性结合外圈固定效应，引起明显的局部共振以及多通道交互突变，图谱解析为外圈/滚珠损伤。"
+  5: "推理链路: 滚珠或外圈检测到 {severity} 的剥落/压痕损伤。对应节点特征出现高能脉冲，由于滚珠自身公转特性结合外圈固定效应，引起明显的局部共振以及多通道交互突变，图谱解析为外圈/滚珠损伤。"
+  6: "推理链路: 滚珠或外圈检测到 {severity} 的剥落/压痕损伤。对应节点特征出现高能脉冲，由于滚珠自身公转特性结合外圈固定效应，引起明显的局部共振以及多通道交互突变，图谱解析为外圈/滚珠损伤。"

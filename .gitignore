@@ -1,0 +1,39 @@
+# === 模型权重 (全部排除) ===
+qwen_weights/
+bearllm_weights/
+
+# === 二进制/大型文件格式 (全部排除) ===
+*.pth
+*.safetensors
+*.bin
+*.npy
+*.npz
+*.hdf5
+*.pt
+*.tar.gz
+*.zip
+*.rar
+*.csv
+*.pdf
+*.svg
+
+# === 整个 data 目录排除 (原始数据不入库) ===
+data/
+
+# === Python 缓存 ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# === 日志与临时文件 ===
+*.log
+cache.npy
+
+# === IDE / 系统 ===
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+.gemini/

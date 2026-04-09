@@ -1,0 +1,30 @@
+# XJTU-SY Multimodal Bearing Fault Diagnosis LLM Requirements
+
+# Core Machine Learning & LLM
+torch>=2.1.0
+torchvision
+torchaudio
+transformers>=4.40.0
+peft>=0.10.0
+accelerate>=0.29.0
+modelscope>=1.14.0
+
+# Graph Neural Networks
+# Note: torch-geometric installation depends on torch/CUDA versions. 
+# Recommended: pip install torch-geometric
+torch-geometric>=2.5.0
+
+# Data Science & Signal Processing
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.4.0
+imbalanced-learn>=0.12.0
+
+# Utilities & Visualization
+tqdm>=4.66.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+python-dotenv
+
+# For DIG (Dynamic Instance Graph)
+# networkx (Optional if used for graph logic, though currently direct matrix)
