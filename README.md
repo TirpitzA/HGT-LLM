@@ -46,7 +46,8 @@ cwru数据集运行方法：
 - Transformers, PEFT
 - vLLM (可选，用于加速推理)
 
-## DIRG数据集下载方法：wget -O VariableSpeedAndLoad.zip "https://zenodo.org/records/3559553/files/VariableSpeedAndLoad.zip?download=1"
+## DIRG数据集下载方法：
+wget -O VariableSpeedAndLoad.zip "https://zenodo.org/records/3559553/files/VariableSpeedAndLoad.zip?download=1"
 
 （apt-get update && apt-get install aria2 -y
    aria2c -s 16 -x 16 -k 1M -c -o VariableSpeedAndLoad.zip "https://zenodo.org/records/3559553/files/VariableSpeedAndLoad.zip?download=1"//多线程接管下载
@@ -54,9 +55,11 @@ cwru数据集运行方法：
 PS：下载之前记得开梯子
 
 
-DIRG说明文档：wget "https://zenodo.org/records/3559553/files/Description%20and%20analysis%20of%20open%20access%20data.pdf?download=1"
+DIRG说明文档：
+wget "https://zenodo.org/records/3559553/files/Description%20and%20analysis%20of%20open%20access%20data.pdf?download=1"
 
 
-## XJTU-SY数据集下载方法:gdown --folder --id 1_ycmG46PARiykt82ShfnFfyQsaXv3_VK (需要先安装gdown:pip install gdown)
+## XJTU-SY数据集下载方法:
+gdown --folder --id 1_ycmG46PARiykt82ShfnFfyQsaXv3_VK (需要先安装gdown:pip install gdown)
 ps:开代理
 
