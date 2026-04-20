@@ -1,0 +1,46 @@
+dataset_name: "IMS"
+model_params:
+  in_channels: 1
+  num_classes: 4
+  slice_length: 1024
+  num_slices: 3
+  num_nodes: 4
+  cnn_hidden: 32
+  gat_hidden: 32
+  transformer_dim: 64
+  transformer_heads: 2
+  transformer_layers: 2
+  dropout: 0.3
+
+checkpoint_path: "bearllm_weights/best_backbone_ims.pth"
+forbidden_words: ["预测状态", "置信度", "诊断结论", "内圈", "滚珠", "外圈", "健康"]
+data_dir: "data/IMS_processed"
+
+components:
+  0: "内圈 (Inner Race)"
+  1: "外圈 (Outer Race)"
+  2: "滚珠 (Rolling Element/Ball)"
+  3: "保持架 (Cage)"
+
+labels:
+  0: "健康状态 (Healthy)"
+  1: "内圈故障 (Inner Race fault)"
+  2: "外圈故障 (Outer Race fault)"
+  3: "滚珠故障 (Ball fault)"
+
+severities:
+  0: "正常"
+  1: "损伤"
+  2: "损伤"
+  3: "损伤"
+
+fault_mapping:
+  1: ["Inner", "内圈"]
+  2: ["Outer", "外圈"]
+  3: ["Ball", "滚珠", "Rolling"]
+
+reasoning_chains:
+  0: "单通道振动信号稳定且处于基线水平，未发现明显的冲击脉冲或周期性异常，物理图谱节点间能量传递规律正常。"
+  1: "推理链路: 内圈检测到结构性裂纹。内圈随主轴旋转，产生周期性的宽频冲击。GAT 捕获到'内圈'节点的能量突变，信号流向'滚珠'与'外圈'节点传导时逐渐衰减，图谱准确判别为内圈故障。"
+  2: "推理链路: 外圈承载区检测到剥落损伤。外圈固定产生稳定的特征脉冲。物理图谱中'外圈'节点出现持续高能脉冲，干扰了与邻近节点的常规交互，时间切片内观测到非平稳调制响应，判定为外圈故障。"
+  3: "推理链路: 滚珠检测到局部点蚀剥落。滚珠在复杂公转与自转中同时撞击内、外圈，产生复杂的调制冲击。物理图谱解析出多个节点间的剧烈能量交换，特征空间呈现非线性扩散，诊断为滚珠故障。"

@@ -29,8 +29,8 @@ QWEN_PATH = os.path.join(PROJECT_ROOT, "qwen_weights")
 # 超参数
 BATCH_SIZE           = 1
 GRAD_ACCUM_STEPS     = 8
-NUM_EPOCHS           = 3
-LEARNING_RATE        = 2e-4
+NUM_EPOCHS           = 8
+LEARNING_RATE        = 1e-4
 MAX_SEQ_LEN          = 512
 WARMUP_RATIO         = 0.05
 SAVE_STEPS           = 50

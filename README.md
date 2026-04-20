@@ -15,30 +15,45 @@ XJTU_Multimodal_LLM/
 └── README.md                # 本文件
 ```
 
-## 核心流程
+## 核心流程与运行方法 (基于 YAML 配置)
 
-1. **数据集生成**: 从预训练的物理网络提取深层语义特征，并结合 DIG 生成专家推理链。
+本项目采用 YAML 配置文件驱动，支持 CWRU、DIRG 和 XJTU 等多种数据集。
+
+### 执行流程
+
+1. **生成多模态数据集**: 结合预训练物理骨干网提取特征并生成专家推理链 JSON。
    ```bash
-   conda run -n llama-factory python src/generate_dataset.py
+   python src/generate_dataset.py --config configs/cwru_config.yaml
    ```
 
-2. **多模态联合微调**: 使用 LoRA 对 Qwen2.5 进行微调，同时训练 AlignmentLayer 实现特征对齐。
+2. **多模态联合微调**: 训练 AlignmentLayer 并使用 LoRA 微调大语言模型。
    ```bash
-   conda run -n llama-factory python src/train.py
+   python src/train.py --config configs/cwru_config.yaml
    ```
 
-3. **多模态评估**: 验证模型在未见过的振动信号上的诊断结果与推理能力。
+3. **模型性能评估**: 验证诊断准确率与推理能力。
    ```bash
-   bash scripts/run_eval.sh
+   python src/evaluate.py --config configs/cwru_config.yaml
    ```
 
-cwru数据集运行方法：
-执行流程：
-1.先运行 models/cwru_physics_pipeline.py 完成物理骨干网的训练，生成 best_model.pth 和 7:2:1 划分的 .npy 原始文件。
+### 核心参数说明
 
-2.生成 JSON：然后运行此 src/generate_dataset.py 脚本，它会自动读取 CWRU 专用的 10 分类图谱和物理模型，生成用于大模型微调的 JSON 文件和对应的特征向量 .pt 文件。
+配置文件位于 `configs/` 目录下（如 `cwru_config.yaml`），关键参数如下：
 
-3.模型微调：最后直接进入 src/train.py 开始 Qwen 大模型的联合微调。
+| 参数 | 意义 | 设置方法 |
+| :--- | :--- | :--- |
+| `dataset_name` | 数据集标识 | 修改为 "CWRU", "DIRG" 或 "XJTU" |
+| `data_dir` | 数据存储路径 | 指向包含 `.npy` 原始文件的目录 |
+| `checkpoint_path` | 物理模型权重 | 指向预训练的 `.pth` 物理骨干网文件 |
+| `model_params` | 物理网络结构参数 | 包含 `in_channels`, `num_classes`, `slice_length` 等 |
+| `labels` | 故障标签映射 | 定义数字分类 ID 到自然语言描述的映射 |
+| `reasoning_chains` | 推理逻辑模板 | 根据物理拓扑定义的专家诊断推理链路 |
+
+### 如何切换数据集
+只需在运行指令时指定对应的配置文件即可：
+- **CWRU**: `--config configs/cwru_config.yaml`
+- **DIRG**: `--config configs/dirg_config.yaml`
+- **XJTU**: `--config configs/xjtu_config.yaml`
 
 ## 环境要求
 - Python 3.9+
@@ -62,4 +77,18 @@ wget "https://zenodo.org/records/3559553/files/Description%20and%20analysis%20of
 ## XJTU-SY数据集下载方法:
 gdown --folder --id 1_ycmG46PARiykt82ShfnFfyQsaXv3_VK (需要先安装gdown:pip install gdown)
 ps:开代理
+
+## JUST数据集下载方法:
+```bash
+# Condition 1
+wget -c "https://data.mendeley.com/public-api/zip/hwg8v5j8t6/download/1" -O JUST_condition1.zip
+# Condition 2
+wget -c "https://data.mendeley.com/public-api/zip/rcxgmdxhbr/download/1" -O JUST_condition2.zip
+```
+
+## IMS数据集下载方法:
+```bash
+wget -c "https://data.mendeley.com/public-api/zip/tg958d59z3/download/1" -O IMS_Bearings.zip
+```
+
 

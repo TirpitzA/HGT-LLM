@@ -28,7 +28,16 @@ __pycache__/
 
 # === 日志与临时文件 ===
 *.log
+results/
+checkpoints/
+.ipynb_checkpoints/
+*_pid.txt
+nohup.out
+train_log.txt
+output.log
 cache.npy
+*.txt
+!README.md
 
 # === IDE / 系统 ===
 .vscode/
@@ -37,3 +46,10 @@ cache.npy
 .DS_Store
 Thumbs.db
 .gemini/
+参考/
+results/
+data/
+qwen_weights/
+bearllm_weights/
+checkpoints/
+

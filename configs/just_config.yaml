@@ -1,0 +1,22 @@
+dataset_name: "JUST"
+model_params:
+  in_channels: 2
+  num_classes: 4
+  slice_length: 1024
+  num_slices: 3
+  num_nodes: 4
+  cnn_hidden: 32
+  gat_hidden: 32
+  transformer_dim: 64
+  transformer_heads: 2
+  transformer_layers: 2
+  dropout: 0.3
+
+checkpoint_path: "bearllm_weights/best_backbone_dirg.pth"
+data_dir: "data/JUST_processed"
+
+labels:
+  0: "健康状态 (Healthy)"
+  1: "内圈故障 (Inner race fault)"
+  2: "外圈故障 (Outer race fault)"
+  3: "滚珠故障 (Rolling element fault)"

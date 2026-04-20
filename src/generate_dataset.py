@@ -12,13 +12,14 @@ import argparse
 import torch
 import numpy as np
 from tqdm import tqdm
+from zero_shot_adapter import ZeroShotChannelAdapter
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+# DATA_DIR = os.path.join(PROJECT_ROOT, 'data') # Removed hardcoded path
 
 def split_dig_explanation(explanation, prediction, critical_slice_idx, time_score, target_class_zh, forbidden_words):
     """ 将 DIG 报告拆分为输入上下文和输出推理链 """
@@ -88,8 +89,12 @@ def main():
     # 2. 循环处理 7:2:1 物理隔离的分支
     for split in ['train', 'val', 'test']:
         print(f"\n[PROCESS] 正在为 {dataset_name} {split.upper()} 集生成多模态对齐数据...")
-        x_path = os.path.join(DATA_DIR, f'X_{split}.npy')
-        y_path = os.path.join(DATA_DIR, f'y_{split}.npy')
+        data_dir = config.get("data_dir", os.path.join(PROJECT_ROOT, 'data'))
+        if not os.path.isabs(data_dir):
+            data_dir = os.path.join(PROJECT_ROOT, data_dir)
+            
+        x_path = os.path.join(data_dir, f'X_{split}.npy')
+        y_path = os.path.join(data_dir, f'y_{split}.npy')
         
         if not os.path.exists(x_path):
             print(f"[SKIP] 未找到 {x_path}")
@@ -103,9 +108,18 @@ def main():
         skipped = 0
 
         with torch.no_grad():
+            # 获取模型期望的输入通道数 (基于已加载的物理模型)
+            source_channels = config['model_params']['in_channels']
+            
             for i in tqdm(range(len(X_np)), desc=f"处理 {split}"):
                 x, y = X_np[i], int(y_np[i])
                 X_ten = torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                
+                # Zero-shot 适配：如果输入通道与模型不符，进行自动对齐
+                if X_ten.shape[-1] != source_channels:
+                    adapter = ZeroShotChannelAdapter(X_ten.shape[-1], source_channels).to(DEVICE)
+                    X_ten = adapter(X_ten)
+                
                 output = model(X_ten, return_attention=True)
 
                 deep_feat = output['deep_feature'].cpu() 
@@ -137,12 +151,12 @@ def main():
                 })
                 deep_features.append(deep_feat)
 
-        # 3. 保存物理隔离的数据集
-        with open(os.path.join(DATA_DIR, f"{split}_sft.json"), 'w', encoding='utf-8') as f:
+        # 3. 保存物理隔离的数据集 (保存在 config 指定的 data_dir 下，确保训练脚本能找到)
+        with open(os.path.join(data_dir, f"{split}_sft.json"), 'w', encoding='utf-8') as f:
             json.dump(qa_pairs, f, ensure_ascii=False, indent=2)
         
         if deep_features:
-            torch.save(torch.cat(deep_features, dim=0), os.path.join(DATA_DIR, f"{split}_features.pt"))
+            torch.save(torch.cat(deep_features, dim=0), os.path.join(data_dir, f"{split}_features.pt"))
             print(f"[INFO] {split} 完成: 有效样本 {len(qa_pairs)}, 跳过错误样本 {skipped}")
 
     print(f"\n✅ {dataset_name} 多模态数据集生成完毕！请直接运行 python src/train.py 进行微调。")

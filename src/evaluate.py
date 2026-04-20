@@ -16,12 +16,17 @@ from typing import Optional
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
+try:
+    from thop import profile
+except ImportError:
+    profile = None
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from models.multimodal_qwen import AlignmentLayer, ModifiedEmbedding, SIGNAL_TOKEN_ID, DEFAULT_NUM_VIB_TOKENS
+from src.zero_shot_adapter import ZeroShotChannelAdapter
 
 QWEN_PATH = os.path.join(PROJECT_ROOT, "qwen_weights")
 DATA_DIR  = PROJECT_ROOT
@@ -94,7 +99,26 @@ class MultimodalEvaluator:
         print(f" - 冻结基座参数量 (Base LLM) : {all_param - trainable_params:,} (约 {all_param/1e9:.1f} B)")
         print(f" - LoRA 可训练参数量        : {trainable_params:,}")
         print(f" - 视觉对齐层 (Alignment)   : {align_params:,}")
-        print(f" - 总计可训练参数量 (Ours)  : {total_trainable:,} (占比 {(total_trainable/all_param)*100:.3f}%)\n")
+        print(f" - 总计可训练参数量 (Ours)  : {total_trainable:,} (占比 {(total_trainable/all_param)*100:.3f}%)")
+        
+        if profile is not None:
+            # 评估对齐层 (Alignment Layer) 的运算量
+            dummy_feat = torch.randn(1, 64).to(self.device).to(torch.float16)
+            with torch.no_grad():
+                align_flops, _ = profile(self.alignment_layer, inputs=(dummy_feat,), verbose=False)
+            
+            # LLM 部分通过理论公式估算: GFLOPS ≈ 2 * Params * Tokens
+            # 取典型序列长度 L=128
+            seq_len = 128
+            llm_params = all_param # 总参数量
+            # 理论估算 (1 token forward): 2 * params
+            # 为了严谨, 我们仅展示对齐层实测 + LLM 规模参数
+            gflops_align = align_flops / 1e9
+            print(f" - [Alignment] 运算量          : {gflops_align:.6f} GFLOPS")
+            print(f" - [Base LLM]  推理估算 (L=1次) : 约 {2 * all_param / 1e9:.2f} GFLOPS (理论值)")
+            print(f" - [Total]     系统级算力需求   : 约 {gflops_align + 2 * all_param / 1e9:.2f} GFLOPS\n")
+        else:
+            print(" - [!] 未安装 thop，跳过 GFLOPS 详细测试。\n")
 
     @torch.no_grad()
     def compute_ppl(self, deep_feature: torch.Tensor, instruction: str,
@@ -209,6 +233,33 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
     class_map = config.get("labels", {})
     num_classes = config["model_params"]["num_classes"]
 
+    # 0. 数据路径解析
+    data_dir = config.get("data_dir", "data/")
+    if not os.path.isabs(data_dir):
+        data_dir = os.path.join(PROJECT_ROOT, data_dir)
+    
+    # 路径解析增强：优先使用 data_dir 下的文件，除非命令行显式指定了非默认路径
+    default_json = os.path.join(PROJECT_ROOT, "data", "test_sft.json")
+    default_pt = os.path.join(PROJECT_ROOT, "data", "test_features.pt")
+
+    if json_path is None or json_path == default_json:
+        alt_json = os.path.join(data_dir, "test_sft.json")
+        if os.path.exists(alt_json):
+            json_path = alt_json
+            
+    if pt_path is None or pt_path == default_pt:
+        alt_pt = os.path.join(data_dir, "test_features.pt")
+        if os.path.exists(alt_pt):
+            pt_path = alt_pt
+
+    # 如果此时路径仍不存在，抛出更有意义的错误
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"未找到测试 JSON 文件: {json_path}")
+    if not os.path.exists(pt_path):
+        raise FileNotFoundError(f"未找到测试特征文件: {pt_path}")
+
+    print(f"[EVAL] 使用测试数据: {json_path}")
+
     with open(json_path, 'r', encoding='utf-8') as f:
         records = json.load(f)
     features = torch.load(pt_path, map_location='cpu')   
@@ -221,7 +272,12 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
     per_class_correct = {i: 0 for i in class_map.keys()}
     per_class_total   = {i: 0 for i in class_map.keys()}
     failures = []
+    y_true_ids = []
+    y_pred_ids = []
     total_ppl = 0.0
+    
+    # 逆向映射用于计算 F1
+    rev_class_map = {v: k for k, v in class_map.items()}
 
     snr_msg = f" (附加特征域 AWGN 噪声, SNR={snr}dB)" if snr is not None else " (干净测试集)"
     print(f"\n[EVAL] 开始评估 {total} 条 {dataset_name} 集样本{snr_msg}...")
@@ -233,6 +289,12 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
         if snr is not None:
             feat = inject_awgn_noise(feat, snr)
 
+        # 检查特征维度是否需要适配 (Zero-shot Robustness)
+        # HGT 期望的输入形状通常包含通道维 [Slices, Length, Channels]
+        # 但如果是 Alignment Layer 的输入 deep_feature [64], 则是在 feature extraction 之后
+        # 这里 feat 是 deep_feature [64], 所以不需要 channel adapter
+        # Channel adapter 主要用于 evaluate_physics 的 backbone 阶段
+        
         true_id  = rec['true_label']
         true_str = class_map[true_id]
         per_class_total[true_id] += 1
@@ -253,6 +315,17 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
         )
 
         pred_str = extract_label(generated, class_map)
+        y_true_ids.append(true_id)
+        
+        if pred_str is not None:
+            pred_id = rev_class_map[pred_str]
+            y_pred_ids.append(pred_id)
+        else:
+            # 解析失败，视为随机分类或者一个不存在的类
+            y_pred_ids.append(-1) 
+
+        if (i + 1) % 10 == 0:
+            torch.cuda.empty_cache()
 
         if pred_str == true_str:
             correct += 1
@@ -263,8 +336,24 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
                 "generated": generated[:200]
             })
 
+    from sklearn.metrics import precision_recall_fscore_support
+    _, _, f1_macro, _ = precision_recall_fscore_support(y_true_ids, y_pred_ids, average='macro', zero_division=0)
+
     accuracy = correct / total * 100
     avg_ppl = total_ppl / total
+
+    # 保存结果供 benchmark_master.py 读取
+    hgt_llm_results = {
+        "HGT-LLM": {
+            "Accuracy": accuracy / 100.0,
+            "F1": f1_macro,
+            "PPL": avg_ppl,
+            "Details": {class_map[i]: (per_class_correct[i]/per_class_total[i] if per_class_total[i]>0 else 0) for i in class_map}
+        }
+    }
+    result_file = os.path.join(PROJECT_ROOT, "results", f"benchmark_{dataset_name}.json")
+    with open(result_file, 'w', encoding='utf-8') as f:
+        json.dump(hgt_llm_results, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*70}")
     print(f"  {dataset_name} 多模态 LLM 轴承诊断评估结果 ({num_classes} 分类)")
@@ -273,7 +362,9 @@ def evaluate(config_path: str, checkpoint_dir: str, json_path: str, pt_path: str
     print(f"  总样本数        : {total}")
     print(f"  正确预测        : {correct}")
     print(f"  诊断准确率      : {accuracy:.2f}%")
+    print(f"  F1 Score(Macro) : {f1_macro:.4f}")
     print(f"  平均 PPL        : {avg_ppl:.4f}")
+    print(f"  结果已保存至    : {result_file}")
     print(f"{'='*70}")
     print("  Per-class 准确率：")
     for cls_id, cls_name in class_map.items():
