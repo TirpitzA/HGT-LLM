@@ -88,7 +88,7 @@ wget -c "https://data.mendeley.com/public-api/zip/rcxgmdxhbr/download/1" -O JUST
 
 ## IMS数据集下载方法:
 ```bash
-wget -c "https://data.mendeley.com/public-api/zip/tg958d59z3/download/1" -O IMS_Bearings.zip
+wget -c "https://data.nasa.gov/docs/legacy/IMS.zip" -O IMS_Bearings.zip
 ```
 
 
